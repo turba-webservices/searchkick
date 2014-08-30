@@ -65,6 +65,7 @@ module Searchkick
         end
 
         def reindex
+          index_name
           index = self.class.searchkick_index
           if destroyed? or !should_index?
             begin

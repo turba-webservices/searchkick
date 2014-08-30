@@ -5,34 +5,39 @@ module Searchkick
     # http://www.elasticsearch.org/blog/changing-mapping-with-zero-downtime/
     def reindex(options = {})
       skip_import = options[:import] == false
+      per_reccord_index_name = searchkick_options.fetch(:per_reccord_index_name, true)
 
-      alias_name = searchkick_index.name
-      new_name = alias_name + "_" + Time.now.strftime("%Y%m%d%H%M%S%L")
-      index = Searchkick::Index.new(new_name)
-
-      clean_indices
-
-      index.create searchkick_index_options
-
-      # check if alias exists
-      if Searchkick.client.indices.exists_alias(name: alias_name)
-        # import before swap
-        searchkick_import(index) unless skip_import
-
-        # get existing indices to remove
-        old_indices = Searchkick.client.indices.get_alias(name: alias_name).keys
-        actions = old_indices.map{|name| {remove: {index: name, alias: alias_name}} } + [{add: {index: new_name, alias: alias_name}}]
-        Searchkick.client.indices.update_aliases body: {actions: actions}
-        clean_indices
+      if per_reccord_index_name
+        searchkick_custom_import
       else
-        searchkick_index.delete if searchkick_index.exists?
-        Searchkick.client.indices.update_aliases body: {actions: [{add: {index: new_name, alias: alias_name}}]}
+        alias_name = searchkick_index.name
+        new_name = alias_name + "_" + Time.now.strftime("%Y%m%d%H%M%S%L")
+        index = Searchkick::Index.new(new_name)
 
-        # import after swap
-        searchkick_import(index) unless skip_import
+        clean_indices
+
+        index.create searchkick_index_options
+
+        # check if alias exists
+        if Searchkick.client.indices.exists_alias(name: alias_name)
+          # import before swap
+          searchkick_import(index) unless skip_import
+
+          # get existing indices to remove
+          old_indices = Searchkick.client.indices.get_alias(name: alias_name).keys
+          actions = old_indices.map{|name| {remove: {index: name, alias: alias_name}} } + [{add: {index: new_name, alias: alias_name}}]
+          Searchkick.client.indices.update_aliases body: {actions: actions}
+          clean_indices
+        else
+          searchkick_index.delete if searchkick_index.exists?
+          Searchkick.client.indices.update_aliases body: {actions: [{add: {index: new_name, alias: alias_name}}]}
+
+          # import after swap
+          searchkick_import(index) unless skip_import
+        end
+
+        index.refresh
       end
-
-      index.refresh
 
       true
     end
@@ -54,8 +59,28 @@ module Searchkick
 
     private
 
+    def searchkick_custom_import
+      items = {}
+      scope = searchkick_klass
+      scope = scope.search_import if scope.respond_to?(:search_import)
+
+      scope.all.each do |item|
+        name = item.index_name
+        items[name] ||= []
+        items[name].push(item) if item.should_index?
+      end
+
+      items.each do |k, v|
+        index = Searchkick::Index.new(k)
+        index.create(searchkick_index_options(v.first.language_for_reccord)) unless index.exists?
+        index.import v
+        index.refresh
+      end
+    end
+
     def searchkick_import(index)
       batch_size = searchkick_options[:batch_size] || 1000
+      per_reccord_index_name = searchkick_options.fetch(:per_reccord_index_name, true)
 
       # use scope for import
       scope = searchkick_klass
@@ -79,7 +104,7 @@ module Searchkick
       end
     end
 
-    def searchkick_index_options
+    def searchkick_index_options(language = nil)
       options = searchkick_options
 
       if options[:mappings] and !options[:merge_mappings]
@@ -191,7 +216,7 @@ module Searchkick
               },
               searchkick_stemmer: {
                 type: "snowball",
-                language: options[:language] || "English"
+                language: language || options[:language] || "English"
               }
             },
             tokenizer: {

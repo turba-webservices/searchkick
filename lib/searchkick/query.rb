@@ -339,6 +339,8 @@ module Searchkick
         end
       end
 
+      p payload
+
       @body = payload
       @facet_limits = facet_limits
       @page = page
